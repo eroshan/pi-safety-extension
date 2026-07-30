@@ -27,6 +27,12 @@ state/
 
 All configured paths are resolved to remain within the extension directory.
 
+## Installation
+
+```
+pi install ssh://git@github.com/eroshan/pi-safety-extension
+```
+
 ## Configuration (environment variables)
 
 All options listed below can also be set in `state/config.json` using the same field names/structure (see example further down). If an environment variable is set, it **takes priority** over `state/config.json`.
