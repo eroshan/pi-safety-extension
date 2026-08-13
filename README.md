@@ -143,7 +143,7 @@ Safety reviews are performed via `@earendil-works/pi-ai/compat`:
 
 Request auth is resolved through `ctx.modelRegistry.getApiKeyAndHeaders(model)`, which may return:
 - an `apiKey`
-- request `headers`
+- request `headers` (including `null` deletion markers, which are forwarded unchanged)
 - or both
 
 The safety review rejects the request if auth resolution fails, or if neither an API key nor headers are available for the selected model.

@@ -9,7 +9,7 @@ type DebugLogger = { log: (event: string, data?: unknown) => void };
 type ReviewContext = {
 	modelRegistry: {
 		getApiKeyAndHeaders: (model: Model<Api>) => Promise<
-			| { ok: true; apiKey?: string; headers?: Record<string, string> }
+			| { ok: true; apiKey?: string; headers?: Record<string, string | null> }
 			| { ok: false; error: string }
 		>;
 	};
@@ -98,7 +98,7 @@ Now output ONLY a single JSON object matching the schema exactly.`;
 async function resolveRequestAuth(
 	modelRegistry: ReviewContext["modelRegistry"],
 	model: Model<Api>,
-): Promise<{ apiKey?: string; headers?: Record<string, string> }> {
+): Promise<{ apiKey?: string; headers?: Record<string, string | null> }> {
 	const auth = await modelRegistry.getApiKeyAndHeaders(model);
 	if (!auth.ok) {
 		throw new Error(auth.error);
