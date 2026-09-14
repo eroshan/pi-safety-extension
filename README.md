@@ -40,6 +40,8 @@ Run `/safety-setup` in an interactive Pi session to select the review model. The
 
 Run `/safety-review-selftest [command]` to send a real test request to that model (`pwd` is used by default). The UI shows the request, model name, start time, elapsed request time, and parsed model output. The self-test reviews the command but does not execute it.
 
+Run `/security-review-prod-toggle` to toggle production mode for the current session. While enabled, every bash command requires explicit user confirmation and commands are never sent to the AI review model. Missing UI, confirmation errors, and declined prompts block execution.
+
 Only LLM-initiated `bash` tool calls are gated. User `!` / `!!` shell commands are outside this extension's scope.
 
 ## Development

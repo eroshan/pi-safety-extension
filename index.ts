@@ -72,6 +72,59 @@ function formatReviewResult(command: string, completed: CompletedReview, showDeb
 	return `${debug}Risk: ${completed.result.risk.toUpperCase()}\nReason: ${completed.result.reason}\nRequest:\n${command}`;
 }
 
+async function confirmProductionCommand(ctx: ExtensionCtx, command: string): Promise<boolean> {
+	if (!ctx.hasUI) return false;
+	if (ctx.mode !== "tui") {
+		return ctx.ui.confirm(
+			"Production security review",
+			`Production mode requires confirmation for every command.\n\nRequest:\n${command}\n\nAllow execution?`,
+		);
+	}
+
+	return ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
+		const container = new Container();
+		container.addChild(new DynamicBorder((text: string) => theme.fg("error", text)));
+		container.addChild(new Text(
+			`${theme.fg("muted", "Mode:")} ${theme.fg("error", theme.bold("PRODUCTION"))}`,
+			1,
+			0,
+		));
+		container.addChild(new Text(theme.fg("accent", theme.bold("Request:")), 1, 0));
+		container.addChild(new Text(
+			command.split("\n").map((line) => theme.fg("syntaxString", `  ${line}`)).join("\n"),
+			1,
+			0,
+		));
+
+		const items: SelectItem[] = [
+			{ value: "decline", label: "Decline", description: "Do not execute the command" },
+			{ value: "allow", label: "Allow", description: "Execute this command without AI review" },
+		];
+		const choices = new SelectList(items, items.length, {
+			selectedPrefix: (text) => theme.fg("accent", text),
+			selectedText: (text) => theme.fg("accent", text),
+			description: (text) => theme.fg("muted", text),
+			scrollInfo: (text) => theme.fg("dim", text),
+			noMatch: (text) => theme.fg("warning", text),
+		});
+		choices.onSelect = (item) => done(item.value === "allow");
+		choices.onCancel = () => done(false);
+		container.addChild(new Spacer(1));
+		container.addChild(choices);
+		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc decline"), 1, 0));
+		container.addChild(new DynamicBorder((text: string) => theme.fg("error", text)));
+
+		return {
+			render: (width) => container.render(width),
+			invalidate: () => container.invalidate(),
+			handleInput: (data) => {
+				choices.handleInput(data);
+				tui.requestRender();
+			},
+		};
+	});
+}
+
 async function confirmReview(
 	ctx: ExtensionCtx,
 	command: string,
@@ -189,6 +242,7 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 	const saveModel = dependencies.saveModel ?? saveReviewModel;
 	let reviewModel: ReviewModelRef | undefined;
 	let showDebug = false;
+	let productionMode = false;
 
 	pi.registerEntryRenderer("safety-review-auto-approved", (_entry, _options, theme) =>
 		new Text(theme.fg("mdLink", theme.bold("safety-review: auto-approved")), 1, 0));
@@ -229,6 +283,14 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 		},
 	});
 
+	pi.registerCommand("security-review-prod-toggle", {
+		description: "Toggle confirmation of every bash command without AI review",
+		handler: async (_args, ctx: ExtensionCtx) => {
+			productionMode = !productionMode;
+			ctx.ui.notify(`Production security review: ${productionMode ? "on" : "off"}`, "info");
+		},
+	});
+
 	pi.registerCommand("safety-review-selftest", {
 		description: "Send a test request to the selected safety review model",
 		handler: async (args, ctx: ExtensionCtx) => {
@@ -260,8 +322,22 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 
 	pi.on("tool_call", async (event, ctx: ExtensionCtx) => {
 		if (!isToolCallEventType("bash", event)) return undefined;
+		const command = String(event.input.command ?? "");
+		if (productionMode) {
+			if (!ctx.hasUI) {
+				return { block: true, reason: "Production mode requires confirmation, but no UI is available." };
+			}
+			try {
+				const allowed = await confirmProductionCommand(ctx, command);
+				return allowed
+					? undefined
+					: { block: true, reason: "Production mode command was not approved by the user." };
+			} catch {
+				return { block: true, reason: "Production mode confirmation failed; request declined." };
+			}
+		}
 		return reviewRequest(
-			String(event.input.command ?? ""),
+			command,
 			reviewModel,
 			ctx,
 			review,

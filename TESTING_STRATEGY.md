@@ -17,6 +17,7 @@ Tests focus on the fail-closed request flow and run without network access.
 - Model selection state accepts and stores only a provider/id reference.
 - A newly selected model is used immediately by bash reviews and self-tests.
 - Self-tests make a real mocked review call and report the model, request, timing, and output.
+- Production mode confirms every bash command without invoking the AI reviewer and fails closed without UI.
 
 `completeSimple` and the model registry are mocked. Tests never execute bash requests or call a real model.
 

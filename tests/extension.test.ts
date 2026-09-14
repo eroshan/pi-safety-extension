@@ -85,4 +85,54 @@ describe("safety extension model selection and self-test", () => {
 			"info",
 		);
 	});
+
+	test("production mode confirms every command without calling the AI reviewer", async () => {
+		const { pi, events, commands } = harness();
+		const review = vi.fn();
+		const ctx = context();
+		ctx.ui.custom.mockResolvedValue(true);
+		safetyExtension(pi, {
+			review,
+			loadModel: vi.fn().mockResolvedValue({ provider: "test", id: "old" }),
+			saveModel: vi.fn(),
+		});
+
+		await events.get("session_start")?.({}, ctx);
+		await commands.get("security-review-prod-toggle")?.("", ctx);
+		const decision = await events.get("tool_call")?.(
+			{ toolName: "bash", input: { command: "deploy production" } },
+			ctx,
+		);
+
+		expect(decision).toBeUndefined();
+		expect(review).not.toHaveBeenCalled();
+		expect(ctx.ui.custom).toHaveBeenCalledOnce();
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Production security review: on", "info");
+	});
+
+	test("production mode declines without UI and does not call the AI reviewer", async () => {
+		const { pi, events, commands } = harness();
+		const review = vi.fn();
+		const ctx = context();
+		ctx.hasUI = false;
+		safetyExtension(pi, {
+			review,
+			loadModel: vi.fn().mockResolvedValue(undefined),
+			saveModel: vi.fn(),
+		});
+
+		await events.get("session_start")?.({}, ctx);
+		await commands.get("security-review-prod-toggle")?.("", ctx);
+		const decision = await events.get("tool_call")?.(
+			{ toolName: "bash", input: { command: "pwd" } },
+			ctx,
+		);
+
+		expect(decision).toEqual({
+			block: true,
+			reason: "Production mode requires confirmation, but no UI is available.",
+		});
+		expect(review).not.toHaveBeenCalled();
+		expect(ctx.ui.custom).not.toHaveBeenCalled();
+	});
 });
