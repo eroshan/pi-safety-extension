@@ -1,55 +1,29 @@
 # Safety Extension — Testing Strategy
 
-## Goals
+Tests focus on the fail-closed request flow and run without network access.
 
-1. Cover the core decision pipeline logic with **unit tests** for deterministic parts:
-   - command analysis (advanced syntax detection)
-   - tokenization
-   - normalization + cache-key generation
-   - whitelist auto-allow
-   - caching backends (memory + SQLite fallback)
-   - state-path constraints (everything inside extension folder)
-   - verdict schema validation + internal concurrency dedupe
-   - approval-notification event formatting / emission (`notify:alert`)
-   - blocked-state event emission (`herdr:blocked`)
+## Covered behavior
 
-2. Keep tests **offline** (no real model calls). LLM review itself is treated as an integration concern.
+- A low-risk bash request runs only after a review recommends `allow` and adds an auto-approved transcript marker.
+- Approval dialogs show risk, reason, and command without a separate notification or action field.
+- Model and request timing details are hidden unless debug display is toggled on.
+- Medium and high risks use a colored, indented confirmation dialog, including when the model recommends `block`.
+- Critical risks are always declined.
+- Missing UI or declined confirmation blocks execution.
+- Missing or unavailable models decline the request.
+- Model discovery, authentication, provider, and parsing failures decline the request.
+- Review output uses the prompt's strict three-field schema and rejects extra fields.
+- The raw command is placed in the prompt as untrusted data without parsing or normalization.
+- Model selection state accepts and stores only a provider/id reference.
+- A newly selected model is used immediately by bash reviews and self-tests.
+- Self-tests make a real mocked review call and report the model, request, timing, and output.
 
-## Test Types
+`completeSimple` and the model registry are mocked. Tests never execute bash requests or call a real model.
 
-### 1) Pure unit tests (fast, deterministic)
-Covers:
-- `src/analyze/*`
-- `src/cache/*` (excluding real SQLite dependency)
-- `src/state.ts`
-- `src/review/verdict.ts`, `src/review/dedupe.ts`
-- `src/review/safety-review.ts` auth resolution behavior
-- `src/ui/approval-event.ts`
+## Run
 
-### 2) Lightweight integration tests (optional, future)
-If desired later:
-- Stub `ctx.modelRegistry.getApiKeyAndHeaders()` and stub `completeSimple()` to return canned JSON.
-- Cover auth combinations: API-key-only, headers-only, API-key-plus-headers, and auth lookup failures.
-- Exercise the `tool_call` handler end-to-end (requires importing `index.ts` and mocking `@earendil-works/pi-coding-agent`).
-
-### 3) Manual QA checklist (optional, future)
-- First-run UI model selection persists `state/config.json`.
-- Confirm prompts appear only for `medium/high/critical`.
-- When confirmation is required, the extension emits `notify:alert` so a separate notify extension can surface a desktop notification.
-- While waiting for approval, the extension emits `herdr:blocked` and clears it when the dialog closes.
-- Cache hits prevent repeated confirmations.
-- Logs are written under `state/logs/`.
-
-## What we explicitly do NOT test (unit level)
-- Real model/provider availability
-- Real UI dialogs
-- Real bash execution (the extension only gates; pi executes)
-
-## How to run
-
-```bash
-npm i
+```text
+npm install
 npm test
+npm run lint
 ```
-
-If you want to validate the optional SQLite backend, install `better-sqlite3` and run tests again.

@@ -8,5 +8,14 @@
     "types": ["node", "vitest/globals"],
     "noEmit": true
   },
-  "include": ["index.ts", "src/**/*.ts", "tests/**/*.ts"]
+  "include": [
+    "index.ts",
+    "review/**/*.ts",
+    "tests/extension.test.ts",
+    "tests/prompt.test.ts",
+    "tests/review-auth.test.ts",
+    "tests/review-flow.test.ts",
+    "tests/state.test.ts",
+    "tests/verdict.test.ts"
+  ]
 }

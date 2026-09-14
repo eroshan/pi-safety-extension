@@ -1,22 +1,36 @@
-import { describe, expect, test } from "vitest";
-import { resolveStatePath } from "../src/state.js";
-import { makeState } from "./helpers/state.js";
+import * as fsp from "node:fs/promises";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-describe("resolveStatePath", () => {
-	test("relative paths resolve inside extensionDir", () => {
-		const state = makeState("/ext");
-		expect(resolveStatePath(state, "state/cache.sqlite3")).toBe("/ext/state/cache.sqlite3");
+vi.mock("node:fs/promises", () => ({
+	readFile: vi.fn(),
+	mkdir: vi.fn(),
+	writeFile: vi.fn(),
+}));
+
+const { loadReviewModel, saveReviewModel } = await import("../review/state.js");
+
+describe("review model state", () => {
+	afterEach(() => vi.clearAllMocks());
+
+	test("loads only a valid model reference", async () => {
+		vi.mocked(fsp.readFile).mockResolvedValue('{"reviewModel":{"provider":"test","id":"safe"}}');
+		await expect(loadReviewModel()).resolves.toEqual({ provider: "test", id: "safe" });
+
+		vi.mocked(fsp.readFile).mockResolvedValue('{"reviewModel":{"provider":"test"}}');
+		await expect(loadReviewModel()).resolves.toBeUndefined();
 	});
 
-	test("absolute paths outside extensionDir are remapped into stateDir", () => {
-		const state = makeState("/ext");
-		const p = resolveStatePath(state, "/tmp/outside.sqlite3");
-		expect(p).toBe("/ext/state/outside.sqlite3");
+	test("returns undefined when configuration cannot be read", async () => {
+		vi.mocked(fsp.readFile).mockRejectedValue(new Error("missing"));
+		await expect(loadReviewModel()).resolves.toBeUndefined();
 	});
 
-	test("absolute paths inside extensionDir are preserved", () => {
-		const state = makeState("/ext");
-		const p = resolveStatePath(state, "/ext/state/cache.sqlite3");
-		expect(p).toBe("/ext/state/cache.sqlite3");
+	test("persists only the selected model", async () => {
+		await saveReviewModel({ provider: "test", id: "safe" });
+		expect(fsp.writeFile).toHaveBeenCalledWith(
+			expect.stringContaining("config.json"),
+			'{\n  "reviewModel": {\n    "provider": "test",\n    "id": "safe"\n  }\n}\n',
+			"utf8",
+		);
 	});
 });

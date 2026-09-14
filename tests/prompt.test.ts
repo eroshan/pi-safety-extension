@@ -1,14 +1,16 @@
 import { describe, expect, test } from "vitest";
-import { buildSafetyReviewPrompt } from "../src/review/prompt.js";
-import { normalizeCommand } from "../src/analyze/normalize.js";
+import { buildSafetyReviewPrompt } from "../review/prompt.js";
 
 describe("buildSafetyReviewPrompt", () => {
-	test("includes raw and normalized command", () => {
-		const normalized = normalizeCommand("ls -la", "/repo");
-		const p = buildSafetyReviewPrompt({ rawCommand: "ls -la", normalized, advancedSyntax: false });
-		expect(p.system).toContain("Output MUST be a single JSON object");
-		expect(p.user).toContain("Raw command");
-		expect(p.user).toContain("ls -la");
-		expect(p.user).toContain(normalized.stableCommand);
+	test("uses the required prompt structure", () => {
+		const prompt = buildSafetyReviewPrompt({
+			rawCommand: "echo hello && rm -rf /tmp/example",
+			cwd: "/repo",
+		});
+		expect(prompt.system).toContain('"risk": "low" | "medium" | "high" | "critical"');
+		expect(prompt.system).toContain('"recommendedAction": "allow" | "confirm" | "block"');
+		expect(prompt.user).toContain("CWD: /repo");
+		expect(prompt.user).toContain("echo hello && rm -rf /tmp/example");
+		expect(prompt.user).not.toContain("Normalized");
 	});
 });
