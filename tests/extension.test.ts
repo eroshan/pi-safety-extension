@@ -86,11 +86,20 @@ describe("safety extension model selection and self-test", () => {
 		);
 	});
 
-	test("production mode confirms every command without calling the AI reviewer", async () => {
+	test("production mode supports j/k navigation in its confirmation dialog", async () => {
 		const { pi, events, commands } = harness();
 		const review = vi.fn();
 		const ctx = context();
-		ctx.ui.custom.mockResolvedValue(true);
+		ctx.ui.custom.mockImplementation((factory) => new Promise<boolean>((resolve) => {
+			const dialog = factory(
+				{ requestRender: vi.fn() },
+				{ fg: (_color: string, text: string) => text, bold: (text: string) => text },
+				undefined as never,
+				resolve,
+			);
+			dialog.handleInput?.("j");
+			dialog.handleInput?.("\r");
+		}));
 		safetyExtension(pi, {
 			review,
 			loadModel: vi.fn().mockResolvedValue({ provider: "test", id: "old" }),
@@ -108,6 +117,30 @@ describe("safety extension model selection and self-test", () => {
 		expect(review).not.toHaveBeenCalled();
 		expect(ctx.ui.custom).toHaveBeenCalledOnce();
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Production security review: on", "info");
+	});
+
+	test("production mode terminates the agent loop after a user declines", async () => {
+		const { pi, events, commands } = harness();
+		const review = vi.fn();
+		const ctx = context();
+		ctx.ui.custom.mockResolvedValue(false);
+		safetyExtension(pi, {
+			review,
+			loadModel: vi.fn().mockResolvedValue({ provider: "test", id: "old" }),
+			saveModel: vi.fn(),
+		});
+
+		await events.get("session_start")?.({}, ctx);
+		await commands.get("security-review-prod-toggle")?.("", ctx);
+		await expect(events.get("tool_call")?.(
+			{ toolName: "bash", input: { command: "deploy production" } },
+			ctx,
+		)).resolves.toEqual({
+			block: true,
+			reason: "Production mode command was not approved by the user.",
+			terminate: true,
+		});
+		expect(review).not.toHaveBeenCalled();
 	});
 
 	test("production mode declines without UI and does not call the AI reviewer", async () => {

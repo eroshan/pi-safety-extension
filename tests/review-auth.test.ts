@@ -63,7 +63,16 @@ describe("reviewBashRequest", () => {
 		expect(completeSimpleMock).not.toHaveBeenCalled();
 	});
 
-	it.each(["", "not json", `${allowJson.slice(0, -1)},"extra":1}`])(
+	it("reports when the review model returns no response", async () => {
+		completeSimpleMock.mockResolvedValue({ stopReason: "stop", content: [] });
+		await expect(reviewBashRequest({
+			model,
+			ctx: context({ ok: true, apiKey: "token" }),
+			command: "pwd",
+		})).rejects.toThrow("Review model returned no response");
+	});
+
+	it.each(["not json", `${allowJson.slice(0, -1)},"extra":1}`])(
 		"fails closed on invalid model output: %j",
 		async (text) => {
 			completeSimpleMock.mockResolvedValue({

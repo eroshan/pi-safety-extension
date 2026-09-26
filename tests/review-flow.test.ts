@@ -81,7 +81,11 @@ describe("request -> review -> review result", () => {
 			reason: "needs approval",
 			recommendedAction: "confirm",
 		});
-		await expect(reviewRequest("npm test", modelRef, ctx, review)).resolves.toMatchObject({ block: true });
+		await expect(reviewRequest("npm test", modelRef, ctx, review)).resolves.toEqual({
+			block: true,
+			reason: "Safety review was not approved by the user: needs approval",
+			terminate: true,
+		});
 	});
 
 	test("does not show a separate result notification", async () => {
@@ -129,13 +133,21 @@ describe("request -> review -> review result", () => {
 		expect(review).not.toHaveBeenCalled();
 	});
 
+	test("explains why a review with no response was declined", async () => {
+		const review = vi.fn().mockRejectedValue(new Error("Review model returned no response"));
+		await expect(reviewRequest("pwd", modelRef, context(), review)).resolves.toEqual({
+			block: true,
+			reason: "Safety review declined the request: Review model returned no response.",
+		});
+	});
+
 	test.each([new Error("provider failed"), new Error("invalid review result")])(
 		"declines when review fails: %s",
 		async (error) => {
 			const review = vi.fn().mockRejectedValue(error);
 			await expect(reviewRequest("pwd", modelRef, context(), review)).resolves.toEqual({
 				block: true,
-				reason: "Safety review failed; request declined.",
+				reason: "Safety review model did not provide a usable response; request declined.",
 			});
 		},
 	);

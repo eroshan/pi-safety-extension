@@ -1,7 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { DynamicBorder, isToolCallEventType } from "@earendil-works/pi-coding-agent";
-import { Container, SelectList, Spacer, Text, type SelectItem } from "@earendil-works/pi-tui";
+import { Container, matchesKey, SelectList, Spacer, Text, type SelectItem } from "@earendil-works/pi-tui";
 
 import { reviewBashRequest } from "./review/safety-review.js";
 import { loadReviewModel, saveReviewModel, type ReviewModelRef } from "./review/state.js";
@@ -40,11 +40,24 @@ type SafetyExtensionDependencies = {
 	saveModel?: (model: ReviewModelRef) => Promise<void>;
 };
 
-type Blocked = { block: true; reason: string };
+type Blocked = { block: true; reason: string; terminate?: true };
 type CompletedReview = { model: AvailableModel; result: ReviewResult; elapsedMs: number };
 
 const NO_MODEL_REASON = "Safety review model is not configured or unavailable; request declined.";
-const REVIEW_FAILED_REASON = "Safety review failed; request declined.";
+const REVIEW_FAILED_REASON = "Safety review model did not provide a usable response; request declined.";
+const REVIEW_MODEL_FAILURES = new Set([
+	"Review model authentication is unavailable",
+	"Review model did not complete successfully",
+	"Review model returned no response",
+	"Review model returned invalid JSON",
+]);
+
+function reviewFailureReason(error: unknown): string {
+	if (error instanceof Error && REVIEW_MODEL_FAILURES.has(error.message)) {
+		return `Safety review declined the request: ${error.message}.`;
+	}
+	return REVIEW_FAILED_REASON;
+}
 
 function modelLabel(model: Pick<AvailableModel, "provider" | "id" | "name">): string {
 	return `${model.provider}/${model.id}${model.name ? ` — ${model.name}` : ""}`;
@@ -70,6 +83,16 @@ function formatReviewResult(command: string, completed: CompletedReview, showDeb
 		? `Model: ${modelLabel(completed.model)}\nRequest time: ${completed.elapsedMs} ms\n`
 		: "";
 	return `${debug}Risk: ${completed.result.risk.toUpperCase()}\nReason: ${completed.result.reason}\nRequest:\n${command}`;
+}
+
+function handleConfirmationInput(data: string, choices: SelectList): void {
+	if (matchesKey(data, "j")) {
+		choices.setSelectedIndex(1);
+	} else if (matchesKey(data, "k")) {
+		choices.setSelectedIndex(0);
+	} else {
+		choices.handleInput(data);
+	}
 }
 
 async function confirmProductionCommand(ctx: ExtensionCtx, command: string): Promise<boolean> {
@@ -111,14 +134,14 @@ async function confirmProductionCommand(ctx: ExtensionCtx, command: string): Pro
 		choices.onCancel = () => done(false);
 		container.addChild(new Spacer(1));
 		container.addChild(choices);
-		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc decline"), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "↑↓/jk navigate • enter select • esc decline"), 1, 0));
 		container.addChild(new DynamicBorder((text: string) => theme.fg("error", text)));
 
 		return {
 			render: (width) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data) => {
-				choices.handleInput(data);
+				handleConfirmationInput(data, choices);
 				tui.requestRender();
 			},
 		};
@@ -174,14 +197,14 @@ async function confirmReview(
 		choices.onCancel = () => done(false);
 		container.addChild(new Spacer(1));
 		container.addChild(choices);
-		container.addChild(new Text(theme.fg("dim", "↑↓ navigate • enter select • esc decline"), 1, 0));
+		container.addChild(new Text(theme.fg("dim", "↑↓/jk navigate • enter select • esc decline"), 1, 0));
 		container.addChild(new DynamicBorder((text: string) => theme.fg(riskColor, text)));
 
 		return {
 			render: (width) => container.render(width),
 			invalidate: () => container.invalidate(),
 			handleInput: (data) => {
-				choices.handleInput(data);
+				handleConfirmationInput(data, choices);
 				tui.requestRender();
 			},
 		};
@@ -217,7 +240,13 @@ export async function reviewRequest(
 				assessment,
 				options.showDebug ?? false,
 			);
-			if (!allowed) return { block: true, reason: `Safety review was not approved by the user: ${result.reason}` };
+			if (!allowed) {
+				return {
+					block: true,
+					reason: `Safety review was not approved by the user: ${result.reason}`,
+					terminate: true,
+				};
+			}
 			return undefined;
 		}
 
@@ -231,7 +260,7 @@ export async function reviewRequest(
 			block: true,
 			reason: error instanceof Error && error.message === NO_MODEL_REASON
 				? NO_MODEL_REASON
-				: REVIEW_FAILED_REASON,
+				: reviewFailureReason(error),
 		};
 	}
 }
@@ -331,7 +360,11 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 				const allowed = await confirmProductionCommand(ctx, command);
 				return allowed
 					? undefined
-					: { block: true, reason: "Production mode command was not approved by the user." };
+					: {
+						block: true,
+						reason: "Production mode command was not approved by the user.",
+						terminate: true,
+					};
 			} catch {
 				return { block: true, reason: "Production mode confirmation failed; request declined." };
 			}

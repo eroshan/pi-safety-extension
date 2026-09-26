@@ -56,9 +56,12 @@ export async function reviewBashRequest(args: {
 		throw new Error("Review model did not complete successfully");
 	}
 
+	const text = extractText(response);
+	if (!text) throw new Error("Review model returned no response");
+
 	let parsed: unknown;
 	try {
-		parsed = JSON.parse(extractText(response)) as unknown;
+		parsed = JSON.parse(text) as unknown;
 	} catch {
 		throw new Error("Review model returned invalid JSON");
 	}

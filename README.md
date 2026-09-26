@@ -20,15 +20,16 @@ The model must return exactly:
 }
 ```
 
-Assessments that require approval are shown in a colored, indented dialog with risk, reason, and command. Run `/safety-review-debug-toggle` to additionally show the review model and request time. The model's action is intentionally hidden from the dialog. Policy is fail-closed:
+Assessments that require approval are shown in a colored, indented dialog with risk, reason, and command. Use `j`/`k` (or the arrow keys) to move between Allow and Decline, then press Enter to select. Run `/safety-review-debug-toggle` to additionally show the review model and request time. The model's action is intentionally hidden from the dialog. Policy is fail-closed:
 
 - `low` risk with action `allow` runs immediately and adds a small blue `safety-review: auto-approved` transcript header;
 - `medium` or `high` risk requires explicit user confirmation in a colored, indented dialog, even when the model recommends `block`;
+- declining a confirmation stops the current agent loop and waits for the next user input;
 - action `confirm` also opens the dialog;
 - `critical` risk is always declined;
 - a `low`-risk `block` action is declined;
 - no UI when confirmation is required is declined;
-- missing/unavailable models, authentication failures, model errors, and invalid output are declined.
+- missing/unavailable models, authentication failures, model errors, and invalid output are declined; a missing review response is reported as `Review model returned no response`.
 
 ## Installation
 
