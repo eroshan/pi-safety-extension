@@ -5,6 +5,7 @@ export default defineConfig({
 		environment: "node",
 		include: [
 			"tests/extension.test.ts",
+			"tests/policy.test.ts",
 			"tests/prompt.test.ts",
 			"tests/review-auth.test.ts",
 			"tests/review-flow.test.ts",

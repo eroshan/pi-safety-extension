@@ -16,16 +16,18 @@ function context(models: Model<Api>[] = [model], mode: "tui" | "rpc" = "tui") {
 		hasUI: false,
 		mode,
 		cwd: "/repo",
+		signal: undefined,
+		abort: vi.fn(),
 		ui: { select: vi.fn(), confirm: vi.fn(), custom: vi.fn(), notify: vi.fn() },
 		modelRegistry: {
-			getAvailable: vi.fn().mockResolvedValue(models),
-			getApiKeyAndHeaders: vi.fn(),
+			getAvailable: vi.fn().mockReturnValue(models),
+			complete: vi.fn(),
 		},
 	};
 }
 
 describe("request -> review -> review result", () => {
-	test("allows only after an explicit allow action from security review", async () => {
+	test("allows only an allowlisted command after an explicit allow action from security review", async () => {
 		const review = vi.fn().mockResolvedValue(allowResult);
 		const ctx = context();
 		await expect(reviewRequest("pwd", modelRef, ctx, review)).resolves.toBeUndefined();
@@ -33,9 +35,28 @@ describe("request -> review -> review result", () => {
 		expect(review).toHaveBeenCalledWith({ model, ctx, command: "pwd" });
 	});
 
+	test("does not let a model allow bypass the local confirmation floor", async () => {
+		const review = vi.fn().mockResolvedValue(allowResult);
+		const ctx = context();
+		await expect(reviewRequest("npm test", modelRef, ctx, review)).resolves.toMatchObject({
+			block: true,
+			reason: expect.stringContaining("no UI is available"),
+		});
+		expect(review).toHaveBeenCalledOnce();
+	});
+
+	test("blocks a catastrophic command without sending it to the model", async () => {
+		const review = vi.fn();
+		await expect(reviewRequest("mkfs.ext4 /dev/sda1", modelRef, context(), review)).resolves.toMatchObject({
+			block: true,
+			reason: expect.stringContaining("Local safety policy"),
+		});
+		expect(review).not.toHaveBeenCalled();
+	});
+
 	test("declines a block action", async () => {
 		const review = vi.fn().mockResolvedValue({ ...allowResult, reason: "unsafe", recommendedAction: "block" });
-		await expect(reviewRequest("rm file", modelRef, context(), review)).resolves.toEqual({
+		await expect(reviewRequest("pwd", modelRef, context(), review)).resolves.toEqual({
 			block: true,
 			reason: "Safety review declined the request: unsafe",
 		});
@@ -57,7 +78,7 @@ describe("request -> review -> review result", () => {
 		expect(ctx.ui.confirm).not.toHaveBeenCalled();
 	});
 
-	test("asks for confirmation on high risk even when the model recommends block", async () => {
+	test("declines a model block decision without offering an override", async () => {
 		const ctx = context();
 		ctx.hasUI = true;
 		ctx.ui.custom.mockResolvedValue(true);
@@ -67,8 +88,11 @@ describe("request -> review -> review result", () => {
 			reason: "dangerous",
 			recommendedAction: "block",
 		});
-		await expect(reviewRequest("dangerous command", modelRef, ctx, review)).resolves.toBeUndefined();
-		expect(ctx.ui.custom).toHaveBeenCalledOnce();
+		await expect(reviewRequest("dangerous command", modelRef, ctx, review)).resolves.toEqual({
+			block: true,
+			reason: "Safety review declined the request: dangerous",
+		});
+		expect(ctx.ui.custom).not.toHaveBeenCalled();
 	});
 
 	test("declines confirmation when the user does not approve", async () => {
@@ -89,6 +113,7 @@ describe("request -> review -> review result", () => {
 		});
 		expect(onBlockedChange).toHaveBeenNthCalledWith(1, true, "Safety review confirmation");
 		expect(onBlockedChange).toHaveBeenNthCalledWith(2, false, "Safety review confirmation");
+		expect(ctx.abort).toHaveBeenCalledOnce();
 	});
 
 	test("does not show a separate result notification", async () => {

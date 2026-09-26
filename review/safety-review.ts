@@ -1,16 +1,14 @@
-import { completeSimple, type Api, type Model, type UserMessage } from "@earendil-works/pi-ai/compat";
+import type { Api, Model, UserMessage } from "@earendil-works/pi-ai/compat";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 import { buildSafetyReviewPrompt } from "./prompt.js";
 import { validateReviewResult, type ReviewResult } from "./verdict.js";
 
-type ReviewContext = {
-	cwd: string;
-	modelRegistry: {
-		getApiKeyAndHeaders: (model: Model<Api>) => Promise<
-			| { ok: true; apiKey?: string; headers?: Record<string, string | null> }
-			| { ok: false; error: string }
-		>;
-	};
+const REVIEW_TIMEOUT_MS = 30_000;
+const REVIEW_MAX_TOKENS = 500;
+
+type ReviewContext = Pick<ExtensionContext, "cwd" | "signal"> & {
+	modelRegistry: Pick<ExtensionContext["modelRegistry"], "complete">;
 };
 
 function extractText(response: unknown): string {
@@ -27,15 +25,23 @@ function extractText(response: unknown): string {
 		.trim();
 }
 
+function reviewSignal(parent: AbortSignal | undefined): AbortSignal {
+	const timeout = AbortSignal.timeout(REVIEW_TIMEOUT_MS);
+	return parent ? AbortSignal.any([parent, timeout]) : timeout;
+}
+
+function isAuthenticationError(error: unknown): boolean {
+	if (!(error instanceof Error)) return false;
+	return /(?:api key|auth(?:entication|orization)?|credential|provider is not configured)/i.test(error.message);
+}
+
 export async function reviewBashRequest(args: {
 	model: Model<Api>;
 	ctx: ReviewContext;
 	command: string;
 }): Promise<ReviewResult> {
-	const auth = await args.ctx.modelRegistry.getApiKeyAndHeaders(args.model);
-	if (!auth.ok) throw new Error("Review model authentication is unavailable");
-	if (!auth.apiKey && (!auth.headers || Object.keys(auth.headers).length === 0)) {
-		throw new Error("Review model authentication is unavailable");
+	if (typeof args.ctx.modelRegistry.complete !== "function") {
+		throw new Error("Safety review requires Pi 0.84.2 or newer");
 	}
 
 	const prompt = buildSafetyReviewPrompt({
@@ -47,12 +53,27 @@ export async function reviewBashRequest(args: {
 		content: [{ type: "text", text: prompt.user }],
 		timestamp: Date.now(),
 	}];
-	const response = await completeSimple(
-		args.model,
-		{ systemPrompt: prompt.system, messages },
-		{ apiKey: auth.apiKey, headers: auth.headers },
-	);
-	if (response.stopReason !== "stop") {
+
+	let response: unknown;
+	try {
+		response = await args.ctx.modelRegistry.complete(
+			args.model,
+			{ systemPrompt: prompt.system, messages },
+			{
+				maxRetries: 0,
+				maxTokens: REVIEW_MAX_TOKENS,
+				signal: reviewSignal(args.ctx.signal),
+				timeoutMs: REVIEW_TIMEOUT_MS,
+			},
+		);
+	} catch (error) {
+		if (isAuthenticationError(error)) {
+			throw new Error("Review model authentication is unavailable", { cause: error });
+		}
+		throw error;
+	}
+
+	if (!response || typeof response !== "object" || (response as { stopReason?: unknown }).stopReason !== "stop") {
 		throw new Error("Review model did not complete successfully");
 	}
 

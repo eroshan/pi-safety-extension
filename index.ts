@@ -3,29 +3,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { DynamicBorder, isToolCallEventType } from "@earendil-works/pi-coding-agent";
 import { Container, matchesKey, SelectList, Spacer, Text, type SelectItem } from "@earendil-works/pi-tui";
 
+import { classifyBashCommand, mergeReviewResults } from "./review/policy.js";
 import { reviewBashRequest } from "./review/safety-review.js";
 import { loadReviewModel, saveReviewModel, type ReviewModelRef } from "./review/state.js";
 import type { ReviewResult } from "./review/verdict.js";
 
 type AvailableModel = Model<Api> & { name?: string };
 
-type ExtensionCtx = {
-	hasUI: boolean;
-	mode: "tui" | "rpc" | "json" | "print";
-	cwd: string;
-	ui: {
-		select: (title: string, options: string[]) => Promise<string | undefined>;
-		confirm: (title: string, message: string) => Promise<boolean>;
-		custom: ExtensionContext["ui"]["custom"];
-		notify: (message: string, level: "info" | "warning" | "error") => void;
-	};
-	modelRegistry: {
-		getAvailable: () => Promise<AvailableModel[]> | AvailableModel[];
-		getApiKeyAndHeaders: (model: Model<Api>) => Promise<
-			| { ok: true; apiKey?: string; headers?: Record<string, string | null> }
-			| { ok: false; error: string }
-		>;
-	};
+type ExtensionCtx = Pick<ExtensionContext, "abort" | "cwd" | "hasUI" | "mode" | "signal"> & {
+	ui: Pick<ExtensionContext["ui"], "confirm" | "custom" | "notify" | "select">;
+	modelRegistry: Pick<ExtensionContext["modelRegistry"], "complete" | "getAvailable">;
 };
 
 type Review = (args: {
@@ -47,11 +34,13 @@ type CompletedReview = { model: AvailableModel; result: ReviewResult; elapsedMs:
 
 const NO_MODEL_REASON = "Safety review model is not configured or unavailable; request declined.";
 const REVIEW_FAILED_REASON = "Safety review model did not provide a usable response; request declined.";
+const CONFIRMATION_TIMEOUT_MS = 120_000;
 const REVIEW_MODEL_FAILURES = new Set([
 	"Review model authentication is unavailable",
 	"Review model did not complete successfully",
 	"Review model returned no response",
 	"Review model returned invalid JSON",
+	"Safety review requires Pi 0.84.2 or newer",
 ]);
 
 function reviewFailureReason(error: unknown): string {
@@ -109,6 +98,7 @@ async function confirmProductionCommand(ctx: ExtensionCtx, command: string): Pro
 		return ctx.ui.confirm(
 			"Production security review",
 			`Production mode requires confirmation for every command.\n\nRequest:\n${command}\n\nAllow execution?`,
+			{ signal: ctx.signal, timeout: CONFIRMATION_TIMEOUT_MS },
 		);
 	}
 
@@ -165,7 +155,11 @@ async function confirmReview(
 ): Promise<boolean> {
 	const { risk, reason } = completed.result;
 	if (ctx.mode !== "tui") {
-		return ctx.ui.confirm(`Safety review: ${risk} risk`, `${assessment}\n\nAllow execution?`);
+		return ctx.ui.confirm(
+			`Safety review: ${risk} risk`,
+			`${assessment}\n\nAllow execution?`,
+			{ signal: ctx.signal, timeout: CONFIRMATION_TIMEOUT_MS },
+		);
 	}
 
 	return ctx.ui.custom<boolean>((tui, theme, _keybindings, done) => {
@@ -227,11 +221,17 @@ export async function reviewRequest(
 	options: { showDebug?: boolean; onAutoApproved?: () => void; onBlockedChange?: BlockedChange } = {},
 ): Promise<Blocked | undefined> {
 	try {
-		const completed = await runReview(command, modelRef, ctx, review);
+		const localResult = classifyBashCommand(command);
+		if (localResult.recommendedAction === "block") {
+			return { block: true, reason: `Safety review declined the request: ${localResult.reason}` };
+		}
+
+		const reviewed = await runReview(command, modelRef, ctx, review);
+		const completed = { ...reviewed, result: mergeReviewResults(localResult, reviewed.result) };
 		const { result } = completed;
 		const assessment = formatReviewResult(command, completed, options.showDebug ?? false);
 
-		if (result.risk === "critical") {
+		if (result.risk === "critical" || result.recommendedAction === "block") {
 			return { block: true, reason: `Safety review declined the request: ${result.reason}` };
 		}
 
@@ -256,6 +256,7 @@ export async function reviewRequest(
 				options.onBlockedChange?.(false, label);
 			}
 			if (!allowed) {
+				ctx.abort();
 				return {
 					block: true,
 					reason: `Safety review was not approved by the user: ${result.reason}`,
@@ -310,8 +311,9 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 				if (index < 0) return;
 
 				const selectedModel = available[index];
-				reviewModel = { provider: selectedModel.provider, id: selectedModel.id };
-				await saveModel(reviewModel);
+				const nextModel = { provider: selectedModel.provider, id: selectedModel.id };
+				await saveModel(nextModel);
+				reviewModel = nextModel;
 				ctx.ui.notify(`Safety review model: ${modelLabel(selectedModel)}`, "info");
 			} catch {
 				ctx.ui.notify("Could not configure the safety review model.", "error");
@@ -375,19 +377,20 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 			emitBlockedChange(pi, true, label);
 			try {
 				const allowed = await confirmProductionCommand(ctx, command);
-				return allowed
-					? undefined
-					: {
-						block: true,
-						reason: "Production mode command was not approved by the user.",
-						terminate: true,
-					};
+				if (allowed) return undefined;
+				ctx.abort();
+				return {
+					block: true,
+					reason: "Production mode command was not approved by the user.",
+					terminate: true,
+				};
 			} catch {
 				return { block: true, reason: "Production mode confirmation failed; request declined." };
 			} finally {
 				emitBlockedChange(pi, false, label);
 			}
 		}
+		if (!reviewModel) reviewModel = await loadModel();
 		return reviewRequest(
 			command,
 			reviewModel,

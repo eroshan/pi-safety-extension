@@ -1,10 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const completeSimpleMock = vi.fn();
-vi.mock("@earendil-works/pi-ai/compat", () => ({ completeSimple: completeSimpleMock }));
-
-const { reviewBashRequest } = await import("../review/safety-review.js");
+import { reviewBashRequest } from "../review/safety-review.js";
 
 const model = {
 	provider: "openai",
@@ -19,11 +16,6 @@ const model = {
 	maxTokens: 4096,
 } satisfies Model<Api>;
 
-const context = (auth: unknown) => ({
-	cwd: "/repo",
-	modelRegistry: { getApiKeyAndHeaders: vi.fn().mockResolvedValue(auth) },
-});
-
 const allowResult = {
 	risk: "low",
 	reason: "safe",
@@ -31,71 +23,86 @@ const allowResult = {
 } as const;
 const allowJson = JSON.stringify(allowResult);
 
-describe("reviewBashRequest", () => {
-	beforeEach(() => completeSimpleMock.mockReset());
+function response(text: string = allowJson, stopReason = "stop") {
+	return { stopReason, content: [{ type: "text", text }] };
+}
 
-	it("sends the prompt structure and returns a valid review result", async () => {
-		completeSimpleMock.mockResolvedValue({
-			stopReason: "stop",
-			content: [{ type: "text", text: allowJson }],
-		});
-		const ctx = context({ ok: true, apiKey: "token", headers: { "X-Test": "1" } });
+function context(complete = vi.fn().mockResolvedValue(response()), signal?: AbortSignal) {
+	return {
+		cwd: "/repo",
+		signal,
+		modelRegistry: { complete },
+	};
+}
+
+describe("reviewBashRequest", () => {
+	beforeEach(() => vi.clearAllMocks());
+
+	it("uses the model registry completion path and returns a valid result", async () => {
+		const ctx = context();
 
 		await expect(reviewBashRequest({ model, ctx, command: "echo hello" })).resolves.toEqual(allowResult);
-		expect(completeSimpleMock).toHaveBeenCalledWith(
+		expect(ctx.modelRegistry.complete).toHaveBeenCalledWith(
 			model,
 			expect.objectContaining({
 				messages: expect.arrayContaining([
 					expect.objectContaining({
 						content: expect.arrayContaining([
-							expect.objectContaining({ text: expect.stringContaining("Raw command:\necho hello") }),
+							expect.objectContaining({ text: expect.stringContaining('"command": "echo hello"') }),
 						]),
 					}),
 				]),
 			}),
-			{ apiKey: "token", headers: { "X-Test": "1" } },
+			expect.objectContaining({
+				maxRetries: 0,
+				maxTokens: 500,
+				signal: expect.any(AbortSignal),
+				timeoutMs: 30_000,
+			}),
 		);
 	});
 
-	it("fails when model authentication is unavailable", async () => {
-		await expect(reviewBashRequest({ model, ctx: context({ ok: true }), command: "pwd" }))
-			.rejects.toThrow("authentication is unavailable");
-		expect(completeSimpleMock).not.toHaveBeenCalled();
+	it("does not require an API key or headers before invoking the registry", async () => {
+		const ctx = context();
+		await expect(reviewBashRequest({ model, ctx, command: "pwd" })).resolves.toEqual(allowResult);
+		expect(ctx.modelRegistry.complete).toHaveBeenCalledOnce();
+	});
+
+	it("classifies registry authentication failures", async () => {
+		const ctx = context(vi.fn().mockRejectedValue(new Error("No API key found for openai")));
+		await expect(reviewBashRequest({ model, ctx, command: "pwd" }))
+			.rejects.toThrow("Review model authentication is unavailable");
+	});
+
+	it("passes cancellation from the active Pi turn to the registry request", async () => {
+		const controller = new AbortController();
+		const complete = vi.fn((_model, _request, options: { signal: AbortSignal }) =>
+			new Promise((_resolve, reject) => {
+				options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true });
+			}));
+		const pending = reviewBashRequest({ model, ctx: context(complete, controller.signal), command: "pwd" });
+
+		controller.abort(new Error("cancelled by user"));
+		await expect(pending).rejects.toThrow("cancelled by user");
 	});
 
 	it("reports when the review model returns no response", async () => {
-		completeSimpleMock.mockResolvedValue({ stopReason: "stop", content: [] });
-		await expect(reviewBashRequest({
-			model,
-			ctx: context({ ok: true, apiKey: "token" }),
-			command: "pwd",
-		})).rejects.toThrow("Review model returned no response");
+		const ctx = context(vi.fn().mockResolvedValue({ stopReason: "stop", content: [] }));
+		await expect(reviewBashRequest({ model, ctx, command: "pwd" }))
+			.rejects.toThrow("Review model returned no response");
 	});
 
 	it.each(["not json", `${allowJson.slice(0, -1)},"extra":1}`])(
 		"fails closed on invalid model output: %j",
 		async (text) => {
-			completeSimpleMock.mockResolvedValue({
-				stopReason: "stop",
-				content: [{ type: "text", text }],
-			});
-			await expect(reviewBashRequest({
-				model,
-				ctx: context({ ok: true, apiKey: "token" }),
-				command: "pwd",
-			})).rejects.toThrow();
+			const ctx = context(vi.fn().mockResolvedValue(response(text)));
+			await expect(reviewBashRequest({ model, ctx, command: "pwd" })).rejects.toThrow();
 		},
 	);
 
 	it("fails closed when the model does not complete successfully", async () => {
-		completeSimpleMock.mockResolvedValue({
-			stopReason: "error",
-			content: [{ type: "text", text: allowJson }],
-		});
-		await expect(reviewBashRequest({
-			model,
-			ctx: context({ ok: true, apiKey: "token" }),
-			command: "pwd",
-		})).rejects.toThrow("did not complete successfully");
+		const ctx = context(vi.fn().mockResolvedValue(response(allowJson, "error")));
+		await expect(reviewBashRequest({ model, ctx, command: "pwd" }))
+			.rejects.toThrow("did not complete successfully");
 	});
 });
