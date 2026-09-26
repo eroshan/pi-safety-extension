@@ -16,13 +16,15 @@ function harness() {
 	const commands = new Map<string, CommandHandler>();
 	const renderers = new Map<string, EntryRenderer>();
 	const appendEntry = vi.fn();
+	const emit = vi.fn();
 	const pi = {
 		on: (name: string, handler: EventHandler) => events.set(name, handler),
 		registerCommand: (name: string, command: { handler: CommandHandler }) => commands.set(name, command.handler),
 		registerEntryRenderer: (name: string, renderer: EntryRenderer) => renderers.set(name, renderer),
 		appendEntry,
+		events: { emit },
 	} as unknown as ExtensionAPI;
-	return { pi, events, commands, renderers, appendEntry };
+	return { pi, events, commands, renderers, appendEntry, emit };
 }
 
 function context() {
@@ -87,7 +89,7 @@ describe("safety extension model selection and self-test", () => {
 	});
 
 	test("production mode supports j/k navigation in its confirmation dialog", async () => {
-		const { pi, events, commands } = harness();
+		const { pi, events, commands, emit } = harness();
 		const review = vi.fn();
 		const ctx = context();
 		ctx.ui.custom.mockImplementation((factory) => new Promise<boolean>((resolve) => {
@@ -116,6 +118,26 @@ describe("safety extension model selection and self-test", () => {
 		expect(decision).toBeUndefined();
 		expect(review).not.toHaveBeenCalled();
 		expect(ctx.ui.custom).toHaveBeenCalledOnce();
+		expect(emit).toHaveBeenNthCalledWith(1, "agent:blocked", {
+			active: true,
+			label: "Production command confirmation",
+			source: "safety-extension",
+		});
+		expect(emit).toHaveBeenNthCalledWith(2, "herdr:blocked", {
+			active: true,
+			label: "Production command confirmation",
+			source: "safety-extension",
+		});
+		expect(emit).toHaveBeenNthCalledWith(3, "agent:blocked", {
+			active: false,
+			label: "Production command confirmation",
+			source: "safety-extension",
+		});
+		expect(emit).toHaveBeenNthCalledWith(4, "herdr:blocked", {
+			active: false,
+			label: "Production command confirmation",
+			source: "safety-extension",
+		});
 		expect(ctx.ui.notify).toHaveBeenCalledWith("Production security review: on", "info");
 	});
 

@@ -81,11 +81,14 @@ describe("request -> review -> review result", () => {
 			reason: "needs approval",
 			recommendedAction: "confirm",
 		});
-		await expect(reviewRequest("npm test", modelRef, ctx, review)).resolves.toEqual({
+		const onBlockedChange = vi.fn();
+		await expect(reviewRequest("npm test", modelRef, ctx, review, { onBlockedChange })).resolves.toEqual({
 			block: true,
 			reason: "Safety review was not approved by the user: needs approval",
 			terminate: true,
 		});
+		expect(onBlockedChange).toHaveBeenNthCalledWith(1, true, "Safety review confirmation");
+		expect(onBlockedChange).toHaveBeenNthCalledWith(2, false, "Safety review confirmation");
 	});
 
 	test("does not show a separate result notification", async () => {

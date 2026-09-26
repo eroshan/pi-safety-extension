@@ -25,6 +25,7 @@ Assessments that require approval are shown in a colored, indented dialog with r
 - `low` risk with action `allow` runs immediately and adds a small blue `safety-review: auto-approved` transcript header;
 - `medium` or `high` risk requires explicit user confirmation in a colored, indented dialog, even when the model recommends `block`;
 - declining a confirmation stops the current agent loop and waits for the next user input;
+- while a confirmation is open, the extension emits `agent:blocked` and `herdr:blocked` events with `{ active, label, source }`;
 - action `confirm` also opens the dialog;
 - `critical` risk is always declined;
 - a `low`-risk `block` action is declined;

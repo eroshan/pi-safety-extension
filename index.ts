@@ -40,6 +40,8 @@ type SafetyExtensionDependencies = {
 	saveModel?: (model: ReviewModelRef) => Promise<void>;
 };
 
+type BlockedChange = (active: boolean, label: string) => void;
+
 type Blocked = { block: true; reason: string; terminate?: true };
 type CompletedReview = { model: AvailableModel; result: ReviewResult; elapsedMs: number };
 
@@ -93,6 +95,12 @@ function handleConfirmationInput(data: string, choices: SelectList): void {
 	} else {
 		choices.handleInput(data);
 	}
+}
+
+function emitBlockedChange(pi: ExtensionAPI, active: boolean, label: string): void {
+	const data = { active, label, source: "safety-extension" };
+	pi.events.emit("agent:blocked", data);
+	pi.events.emit("herdr:blocked", data);
 }
 
 async function confirmProductionCommand(ctx: ExtensionCtx, command: string): Promise<boolean> {
@@ -216,7 +224,7 @@ export async function reviewRequest(
 	modelRef: ReviewModelRef | undefined,
 	ctx: ExtensionCtx,
 	review: Review = reviewBashRequest,
-	options: { showDebug?: boolean; onAutoApproved?: () => void } = {},
+	options: { showDebug?: boolean; onAutoApproved?: () => void; onBlockedChange?: BlockedChange } = {},
 ): Promise<Blocked | undefined> {
 	try {
 		const completed = await runReview(command, modelRef, ctx, review);
@@ -233,13 +241,20 @@ export async function reviewRequest(
 			if (!ctx.hasUI) {
 				return { block: true, reason: `Safety review requires confirmation, but no UI is available: ${result.reason}` };
 			}
-			const allowed = await confirmReview(
-				ctx,
-				command,
-				completed,
-				assessment,
-				options.showDebug ?? false,
-			);
+			const label = "Safety review confirmation";
+			options.onBlockedChange?.(true, label);
+			let allowed = false;
+			try {
+				allowed = await confirmReview(
+					ctx,
+					command,
+					completed,
+					assessment,
+					options.showDebug ?? false,
+				);
+			} finally {
+				options.onBlockedChange?.(false, label);
+			}
 			if (!allowed) {
 				return {
 					block: true,
@@ -356,6 +371,8 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 			if (!ctx.hasUI) {
 				return { block: true, reason: "Production mode requires confirmation, but no UI is available." };
 			}
+			const label = "Production command confirmation";
+			emitBlockedChange(pi, true, label);
 			try {
 				const allowed = await confirmProductionCommand(ctx, command);
 				return allowed
@@ -367,6 +384,8 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 					};
 			} catch {
 				return { block: true, reason: "Production mode confirmation failed; request declined." };
+			} finally {
+				emitBlockedChange(pi, false, label);
 			}
 		}
 		return reviewRequest(
@@ -377,6 +396,7 @@ export default function safetyExtension(pi: ExtensionAPI, dependencies: SafetyEx
 			{
 				showDebug,
 				onAutoApproved: () => pi.appendEntry("safety-review-auto-approved"),
+				onBlockedChange: (active, label) => emitBlockedChange(pi, active, label),
 			},
 		);
 	});
