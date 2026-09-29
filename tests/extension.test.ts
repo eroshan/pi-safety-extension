@@ -32,6 +32,8 @@ function context() {
 		hasUI: true,
 		mode: "tui" as const,
 		cwd: "/repo",
+		signal: undefined,
+		abort: vi.fn(),
 		ui: {
 			select: vi.fn().mockResolvedValue("test/selected — Selected reviewer"),
 			confirm: vi.fn(),
@@ -39,8 +41,8 @@ function context() {
 			notify: vi.fn(),
 		},
 		modelRegistry: {
-			getAvailable: vi.fn().mockResolvedValue([oldModel, selectedModel]),
-			getApiKeyAndHeaders: vi.fn(),
+			getAvailable: vi.fn().mockReturnValue([oldModel, selectedModel]),
+			complete: vi.fn(),
 		},
 	};
 }
@@ -86,6 +88,48 @@ describe("safety extension model selection and self-test", () => {
 			expect.stringMatching(/Request time: \d+ ms[\s\S]*Request:\necho test/),
 			"info",
 		);
+	});
+
+	test("retries loading a missing selection before reviewing a command", async () => {
+		const { pi, events } = harness();
+		const review = vi.fn().mockResolvedValue({
+			risk: "low",
+			reason: "safe",
+			recommendedAction: "allow",
+		});
+		const loadModel = vi.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockResolvedValueOnce({ provider: "test", id: "old" });
+		const ctx = context();
+		safetyExtension(pi, { review, loadModel, saveModel: vi.fn() });
+
+		await events.get("session_start")?.({}, ctx);
+		await events.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, ctx);
+
+		expect(loadModel).toHaveBeenCalledTimes(2);
+		expect(review).toHaveBeenCalledWith({ model: oldModel, ctx, command: "pwd" });
+	});
+
+	test("keeps the previous model active when the new selection cannot be saved", async () => {
+		const { pi, events, commands } = harness();
+		const review = vi.fn().mockResolvedValue({
+			risk: "low",
+			reason: "safe",
+			recommendedAction: "allow",
+		});
+		const ctx = context();
+		safetyExtension(pi, {
+			review,
+			loadModel: vi.fn().mockResolvedValue({ provider: "test", id: "old" }),
+			saveModel: vi.fn().mockRejectedValue(new Error("read only")),
+		});
+
+		await events.get("session_start")?.({}, ctx);
+		await commands.get("safety-setup")?.("", ctx);
+		await events.get("tool_call")?.({ toolName: "bash", input: { command: "pwd" } }, ctx);
+
+		expect(ctx.ui.notify).toHaveBeenCalledWith("Could not configure the safety review model.", "error");
+		expect(review).toHaveBeenCalledWith({ model: oldModel, ctx, command: "pwd" });
 	});
 
 	test("production mode supports j/k navigation in its confirmation dialog", async () => {
@@ -163,6 +207,7 @@ describe("safety extension model selection and self-test", () => {
 			terminate: true,
 		});
 		expect(review).not.toHaveBeenCalled();
+		expect(ctx.abort).toHaveBeenCalledOnce();
 	});
 
 	test("production mode declines without UI and does not call the AI reviewer", async () => {

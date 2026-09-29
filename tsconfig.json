@@ -12,6 +12,7 @@
     "index.ts",
     "review/**/*.ts",
     "tests/extension.test.ts",
+    "tests/policy.test.ts",
     "tests/prompt.test.ts",
     "tests/review-auth.test.ts",
     "tests/review-flow.test.ts",
